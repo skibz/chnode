@@ -1,8 +1,4 @@
 
-#if __STDC_HOSTED__ == 0
-#error "chnode does not support freestanding implementations"
-#endif
-
 #ifdef __linux__
 #define UNAME "linux"
 #elif defined __APPLE__
