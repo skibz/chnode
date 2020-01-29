@@ -1,4 +1,6 @@
 
+chnode
+
 *.d
 *.o
 *.ko

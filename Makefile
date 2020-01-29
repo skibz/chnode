@@ -10,3 +10,4 @@ chnode: *.c
 
 clean:
 	-rm -f *.o
+	-rm -f chnode
