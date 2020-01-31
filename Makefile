@@ -4,10 +4,10 @@ chnode: *.c
 		-fsanitize=undefined,nullability,integer \
 		-Wall \
 		-pedantic \
-		-o $@ \
+		$^ \
 		$(shell curl-config --libs) \
-		$^
+		-o $@
 
 clean:
-	-rm -f *.o
-	-rm -f chnode
+	-rm -f *.o *.out chnode
+	-rm -rf $$HOME/.chnode
