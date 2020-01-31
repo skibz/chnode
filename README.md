@@ -1,6 +1,5 @@
 
 # chnode
----
 
 ## Todos
 
@@ -11,9 +10,9 @@
 
 ## Installing
 
-Just `make` and copy or symlink the resulting binary to somewhere on your `$PATH`.
+Just run `make` and copy or symlink the resulting binary to somewhere on your `$PATH`.
 
----
+## Background
 
 The, supposedly, best tools for this problem all seem to come with frustrating caveats.
 
