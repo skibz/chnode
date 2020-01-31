@@ -1,7 +1,19 @@
 
 # chnode
+---
 
-## Why
+## Todos
+
+* Finish Windows support
+* Ensure everything works on Linux
+* Support binary directories other than `/usr/local/bin`
+* Provide binaries for as many architectures as possible
+
+## Installing
+
+Just `make` and copy or symlink the resulting binary to somewhere on your `$PATH`.
+
+---
 
 The, supposedly, best tools for this problem all seem to come with frustrating caveats.
 
@@ -16,8 +28,6 @@ Having to manually (and even automatically) perform this step is disappointing. 
 
 I tried to find other popular tools and came across `nvs`, which is actually written in JavaScript. Really missing the point there, folks. Facepalm.
 
-## What
-
 So, with all of that in mind, what I'm building here:
 
 * Only depends on `libcurl`
@@ -27,13 +37,4 @@ So, with all of that in mind, what I'm building here:
 * Keeps all the tarballs and binaries downloaded in your home directory (`~/.chnode/$version`); and
 * Is just a single executable with no ahead-of-time set-up required, or complicated update flow (*cough*, `nvm`)
 
-## Todos
 
-* Finish Windows support
-* Ensure everything works on Linux
-* Support binary directories other than `/usr/local/bin`
-* Provide binaries for as many architectures as possible
-
-## Installing
-
-Just `make` and copy or symlink the resulting binary to somewhere on your `$PATH`.
