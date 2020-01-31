@@ -10,7 +10,9 @@
 
 ## Installing
 
-Just run `make` and copy or symlink the resulting binary to somewhere on your `$PATH`.
+* Ensure you have `libcurl` downloaded and reachable by your system's linker
+* `make`
+* Copy or symlink the resulting binary to somewhere on your `$PATH`
 
 ## Background
 
