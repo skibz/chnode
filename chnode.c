@@ -1,5 +1,6 @@
 
 #ifdef __linux__
+#define _GNU_SOURCE
 #define UNAME "linux"
 #elif defined __APPLE__
 #define UNAME "darwin"
@@ -21,47 +22,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include <curl/curl.h>
-
-size_t curl_on_data(void* ptr, size_t bytes, size_t nmemb, void* stream) {
-	return fwrite(ptr, bytes, nmemb, (FILE*) stream);
-}
-
-int http_get_to_file(char* uri, FILE* f) {
-	CURL* curl;
-	curl_global_init(CURL_GLOBAL_ALL);
-	curl = curl_easy_init();
-	curl_easy_setopt(curl, CURLOPT_URL, uri);
-	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-	curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_on_data);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, f);
-	CURLcode res = curl_easy_perform(curl);
-	curl_easy_cleanup(curl);
-	curl_global_cleanup();
-	return (
-		res != CURLE_HTTP_RETURNED_ERROR &&
-		res == CURLE_OK
-	);
-}
-
-// TODO
-// * name this fn better
-// * try and improve its ergonomics
-size_t use(char* version, char* out[3]) {
-	size_t version_ptr = 0;
-	char* next_token = strtok(version, ".");
-	if (!next_token) return 0;
-	out[version_ptr] = next_token;
-	while ((next_token = strtok(NULL, "."))) {
-		version_ptr += 1;
-		if (version_ptr > 2) return 0;
-		out[version_ptr] = next_token;
-	}
-	if (version_ptr != 2) return 0;
-	return 1;
-}
-
 // TODO
 // delete directories created for failed downloads (ie. http 404)
 int main(int argc, char** argv) {
@@ -77,14 +37,15 @@ int main(int argc, char** argv) {
 	}
 
 	char* version[3];
-	size_t parsed = use(argv[1], version);
-	if (!parsed) {
+	bool error = parse_version(argv[1], version);
+	if (error) {
 		printf("Failed to parse version number. Exiting...\n");
 		return EXIT_FAILURE;
 	}
 
 	printf("Using v%s.%s.%s...\n", version[0], version[1], version[2]);
 
+	int cmd_status;
 	bool format_error, mkdir_error, symlink_error;
 
 	const char* HOME = getenv("HOME");
@@ -170,10 +131,11 @@ int main(int argc, char** argv) {
 		char* nodejs_uri;
 		format_error = asprintf(
 			&nodejs_uri,
-			// https://nodejs.org/dist/latest-v12.x/node-v12.14.1-linux-arm64.tar.gz
-			"%s/latest-v%s.x/%s",
+			"%s/v%s.%s.%s/%s",
 			NODEJS_DIST_BASE_URI,
 			version[0],
+			version[1],
+			version[2],
 			nodejs_tarball_path
 		) < 0;
 
@@ -204,7 +166,10 @@ int main(int argc, char** argv) {
 			return EXIT_FAILURE;
 		}
 
+		bool downloaded;
+
 		FILE* nodejs_tarball;
+
 		nodejs_tarball = fopen(nodejs_download_path, "wb");
 		if (!nodejs_tarball) {
 			perror("Failed to open file path for download");
@@ -216,8 +181,18 @@ int main(int argc, char** argv) {
 			return EXIT_FAILURE;
 		}
 
-		bool downloaded = http_get_to_file(nodejs_uri, nodejs_tarball);
+		downloaded = http_get_to_file(nodejs_uri, nodejs_tarball);
+		if (fclose(nodejs_tarball)) {
+			perror("Failed to close reference to tarball");
+			free(chnode_path);
+			free(nodejs_path);
+			free(nodejs_tarball_path);
+			free(nodejs_uri);
+			free(nodejs_download_path);
+			return EXIT_FAILURE;
+		}
 		if (!downloaded) {
+			printf("Failed to download given version\n");
 			free(chnode_path);
 			free(nodejs_path);
 			free(nodejs_tarball_path);
@@ -226,9 +201,80 @@ int main(int argc, char** argv) {
 			return EXIT_FAILURE;
 		}
 
-		// TODO
-		// check the return code
-		fclose(nodejs_tarball);
+		char* nodejs_shasums_uri;
+		format_error = asprintf(
+			&nodejs_uri,
+			"%s/v%s.%s.%s/SHASUMS256.txt",
+			NODEJS_DIST_BASE_URI,
+			version[0],
+			version[1],
+			version[2]
+		) < 0;
+
+		if (format_error) {
+			perror("Failed to construct URI to SHASUMS file");
+			free(chnode_path);
+			free(nodejs_path);
+			free(nodejs_tarball_path);
+			free(nodejs_uri);
+			free(nodejs_download_path);
+			return EXIT_FAILURE;
+		}
+
+		FILE* nodejs_shasums;
+		nodejs_shasums = fopen(nodejs_download_path, "wb");
+		if (!nodejs_shasums) {
+			perror("Failed to open file path for download");
+			free(chnode_path);
+			free(nodejs_path);
+			free(nodejs_tarball_path);
+			free(nodejs_uri);
+			free(nodejs_download_path);
+			return EXIT_FAILURE;
+		}
+
+		downloaded = http_get_to_file(nodejs_shasums_uri, nodejs_shasums);
+		if (fclose(nodejs_shasums)) {
+			perror("Failed to close reference to SHASUMS file");
+			free(chnode_path);
+			free(nodejs_path);
+			free(nodejs_tarball_path);
+			free(nodejs_uri);
+			free(nodejs_download_path);
+			free(nodejs_shasums_uri);
+			return EXIT_FAILURE;
+		}
+		if (!downloaded) {
+			printf("Failed to download given SHASUMS file\n");
+			free(chnode_path);
+			free(nodejs_path);
+			free(nodejs_tarball_path);
+			free(nodejs_uri);
+			free(nodejs_download_path);
+			free(nodejs_shasums_uri);
+			return EXIT_FAILURE;
+		}
+
+		char* shasum_command;
+		format_error = asprintf(
+			&shasum_command,
+			"sha256sum -c <(grep %s %s/SHASUMS256.txt)",
+			nodejs_tarball_path,
+			nodejs_path
+		) < 0;
+
+		cmd_status = system(shasum_command);
+		if (cmd_status != 0) {
+			printf("Failed to verify release signatures for given version. Exiting...\n", );
+			free(chnode_path);
+			free(nodejs_path);
+			free(nodejs_tarball_path);
+			free(nodejs_uri);
+			free(nodejs_download_path);
+			free(nodejs_shasums_uri);
+			free(shasum_command);
+			return EXIT_FAILURE;
+		}
 
 		char* tar_command;
 		format_error = asprintf(
@@ -246,26 +292,28 @@ int main(int argc, char** argv) {
 			free(nodejs_tarball_path);
 			free(nodejs_uri);
 			free(nodejs_download_path);
+			free(nodejs_shasums_uri);
 			return EXIT_FAILURE;
 		}
 
-		int code = system(tar_command);
-		if (code == 127 || code == -1 || code != 0) {
-			printf("Failed to extract tarball due to error %d. Exiting...\n", code);
+		cmd_status = system(tar_command);
+		if (cmd_status == 127 || cmd_status == -1 || cmd_status != 0) {
+			printf("Failed to extract tarball due to error %d. Exiting...\n", cmd_status);
 			free(chnode_path);
 			free(nodejs_path);
 			free(nodejs_tarball_path);
 			free(nodejs_uri);
 			free(nodejs_download_path);
+			free(nodejs_shasums_uri);
 			free(tar_command);
 			return EXIT_FAILURE;
-		} else {
-			printf("Tarball extracted to %s\n", nodejs_release_path);
 		}
+		printf("Tarball extracted to %s\n", nodejs_release_path);
 
 		free(nodejs_tarball_path);
 		free(nodejs_uri);
 		free(nodejs_download_path);
+		free(nodejs_shasums_uri);
 		free(tar_command);
 
 		// TODO
