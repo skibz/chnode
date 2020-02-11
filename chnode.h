@@ -638,6 +638,7 @@ static bool parse_arguments(int argc, char** argv) {
 	#ifdef TRACE
 	printf("TRACE: enter parse_arguments\n");
 	#endif
+
 	// TODO
 	// accept a command via stdin
 	if (

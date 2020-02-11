@@ -4,8 +4,6 @@
 ## Todos
 
 * Finish Windows support
-* Ensure everything works on Linux
-* Support binary directories other than `/usr/local/bin`
 * Provide binaries for as many architectures as possible
 
 ## Installing
