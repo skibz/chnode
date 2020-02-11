@@ -3,6 +3,8 @@ chnode: *.c
 	cc \
 		-fsanitize=undefined,nullability,integer \
 		-Wall \
+		-D PREFIX="\"$(shell echo $$HOME)\"" \
+		-D TRACE \
 		-pedantic \
 		$^ \
 		$(shell curl-config --libs) \
@@ -13,6 +15,7 @@ install: *.c
 	cc \
 		-O3 \
 		-D_FORTIFY_SOURCE=2 \
+		-D PREFIX="\"$(PREFIX)\"" \
 		-Wall \
 		-pedantic \
 		$^ \
