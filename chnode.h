@@ -649,7 +649,7 @@ static bool parse_arguments(int argc, char** argv) {
 		return true;
 	}
 
-	if (atexit(on_exit)) {
+	if (atexit(trap_exit)) {
 		perror("Failed to register exit handler. Exiting...\n");
 		return false;
 	}
