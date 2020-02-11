@@ -72,7 +72,7 @@ static struct chnode {
 
 } ctx;
 
-static void on_exit() {
+static void trap_exit() {
 	#ifdef TRACE
 	printf("TRACE: enter on_exit\n");
 	#endif
