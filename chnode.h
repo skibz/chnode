@@ -17,6 +17,7 @@
 #warning "chnode is being installed with the default global prefix: /usr/local"
 #endif
 
+#define NVMRC_MAX_LENGTH 50
 #define NODEJS_DIST_BASE_URI "https://nodejs.org/dist"
 
 #include <errno.h>
@@ -31,9 +32,9 @@
 
 static struct chnode {
 	bool is_error;
-	bool is_recoverable;
 	bool installing;
 	bool restoring;
+	char* allocation;
 
 	struct args {
 		bool help;
@@ -77,22 +78,35 @@ static void trap_exit() {
 	printf("TRACE: enter on_exit\n");
 	#endif
 
-	if (!ctx.is_error) return;
-	if (!ctx.is_recoverable) {
-		printf("WARNING: Detected an unrecoverable error\n");
-		printf("WARNING: Consider nuking your chnode directory before retrying\n");
+	if (ctx.allocation) {
+		#ifdef TRACE
+		printf("TRACE: enter ctx.allocation branch\n");
+		#endif
+		free(ctx.allocation);
+	}
+
+	if (!ctx.is_error) {
+		#ifdef TRACE
+		printf("TRACE: enter not ctx.is_error branch\n");
+		#endif
 		return;
 	}
+
+	if (!ctx.paths.version) return;
 
 	char* clean_cmd;
 	bool format_error = asprintf(&clean_cmd, "rm -rf %s", ctx.paths.version) < 0;
 	if (format_error) {
-		printf("WARNING: Failed to clean up .chnode directory\n");
+		printf("WARNING: Failed to format cleanup command\n");
 		return;
 	}
 
+	#ifdef TRACE
+	printf("TRACE: clean_cmd %s\n", clean_cmd);
+	#endif
+
 	if (system(clean_cmd)) {
-		printf("WARNING: Failed to clean up %s\n", ctx.paths.version);
+		printf("WARNING: Failed to clean up directory %s\n", ctx.paths.version);
 		return;
 	}
 }
@@ -103,7 +117,7 @@ static size_t curl_on_data(void* ptr, size_t bytes, size_t nmemb, void* stream) 
 
 static bool http_get_to_file(char* uri, FILE* f) {
 	#ifdef TRACE
-	printf("TRACE: enter http_get_to_file\n");
+	printf("TRACE: enter http_get_to_file: %s\n", uri);
 	#endif
 	CURL* curl;
 	curl_global_init(CURL_GLOBAL_ALL);
@@ -114,12 +128,22 @@ static bool http_get_to_file(char* uri, FILE* f) {
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_on_data);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, f);
 	CURLcode res = curl_easy_perform(curl);
-	curl_easy_cleanup(curl);
-	curl_global_cleanup();
-	return (
+	bool success = (
 		res != CURLE_HTTP_RETURNED_ERROR &&
 		res == CURLE_OK
 	);
+	#ifdef TRACE
+	if (!success) {
+		printf("TRACE: got curl error %d: %s\n", res, curl_easy_strerror(res));
+	}
+	#endif
+
+	curl_easy_cleanup(curl);
+	curl_global_cleanup();
+	#ifdef TRACE
+	printf("TRACE: enter http_get_to_file\n");
+	#endif
+	return success;
 }
 
 static void show_intro(void) {
@@ -136,10 +160,13 @@ static void show_usage(void) {
 	#ifdef TRACE
 	printf("TRACE: enter show_usage\n");
 	#endif
-	printf("Usage: chnode <version>\n");
+	printf("Usage:\n");
+	printf("\tchnode use\n");
+	printf("\tchnode <version>\n");
+	printf("\tchnode < /some/version/file\n");
 }
 
-static bool show_current() {
+static bool show_current(void) {
 	#ifdef TRACE
 	printf("TRACE: enter show_current\n");
 	#endif
@@ -179,29 +206,120 @@ static bool parse_version(char* version) {
 	#ifdef TRACE
 	printf("TRACE: enter parse_version\n");
 	#endif
-	size_t v_ptr = 0;
-	char* versions[3];
-	char* next_token = strtok(version, ".");
-	if (!next_token) return false;
-	versions[v_ptr] = next_token;
-	while ((next_token = strtok(NULL, "."))) {
-		v_ptr += 1;
-		if (v_ptr > 2) return false;
-		versions[v_ptr] = next_token;
+	char* semver_parts[3];
+	int i = 0;
+	for (
+		char* next_token = strtok(version, ".");
+		next_token;
+		next_token = strtok(NULL, ".")
+	) {
+		#ifdef TRACE
+		printf("TRACE: idx %d: token %s\n", i, next_token);
+		#endif
+		semver_parts[i] = next_token;
+		i += 1;
 	}
-	if (v_ptr != 2) return false;
 
-	ctx.version.major = versions[0];
-	ctx.version.minor = versions[1];
-	ctx.version.patch = versions[2];
+	if (i != 3) {
+		printf("Failed to parse version, exiting.\n");
+		return false;
 
-	// FIXME
-	// the version can be a.b.c
+		// FIXME
+		// support codenames
+	}
+
+	ctx.args.version = true;
+	ctx.version.major = semver_parts[0];
+	ctx.version.minor = semver_parts[1];
+	ctx.version.patch = semver_parts[2];
 
 	return true;
 }
 
-static bool chnode_dir() {
+static bool read_fd(int fd) {
+	#ifdef TRACE
+	printf("TRACE: enter read_fd\n");
+	#endif
+
+	struct stat fd_stat;
+	if (fstat(fd, &fd_stat) == -1) {
+		perror("Failed to get length of file descriptor");
+		return false;
+	}
+
+	if (!fd_stat.st_size) {
+		#ifdef TRACE
+		printf("TRACE: enter help branch\n");
+		#endif
+		ctx.args.help = true;
+		return true;
+	}
+
+	if (fd_stat.st_size > NVMRC_MAX_LENGTH) {
+		printf("Input byte length exceeds limit.\n");
+		return false;
+	}
+
+	FILE* input = fdopen(fd, "rb");
+	if (!input) {
+		perror("Failed to open file descriptor for reading");
+		return false;
+	}
+
+	ctx.allocation = malloc(fd_stat.st_size + 1);
+	if (!ctx.allocation) {
+		perror("Failed to allocate memory for input bytes");
+		return false;
+	}
+
+	fread(ctx.allocation, 1, fd_stat.st_size, input);
+	ctx.allocation[fd_stat.st_size] = 0;
+
+	if (fclose(input) == EOF) {
+		perror("Failed to close file descriptor");
+		return false;
+	}
+
+	return parse_version(ctx.allocation);
+}
+
+static bool parse_nvmrc(void) {
+	#ifdef TRACE
+	printf("TRACE: enter parse_nvmrc\n");
+	#endif
+
+	char* cwd = getenv("PWD");
+	if (!cwd) {
+		printf("Failed to determine current working directory.\n");
+		return false;
+	}
+
+	char* nvmrc_path;
+	bool format_error = asprintf(&nvmrc_path, "%s/.nvmrc", cwd) < 0;
+	if (format_error) {
+		printf("Failed to construct path to .nvmrc\n");
+		return false;
+	}
+
+	FILE* nvmrc_file = fopen(nvmrc_path, "rb");
+	if (!nvmrc_file) {
+		perror(nvmrc_path);
+		return false;
+	}
+
+	int nvmrc_fd = fileno(nvmrc_file);
+	return read_fd(nvmrc_fd);
+}
+
+static bool parse_stdin(void) {
+	#ifdef TRACE
+	printf("TRACE: enter parse_stdin\n");
+	#endif
+
+	return read_fd(STDIN_FILENO);
+}
+
+static bool chnode_dir(void) {
 	#ifdef TRACE
 	printf("TRACE: enter chnode_dir\n");
 	#endif
@@ -214,7 +332,6 @@ static bool chnode_dir() {
 	if (format_error) {
 		perror("Failed to construct path to chnode directory");
 		ctx.is_error = true;
-		ctx.is_recoverable = false;
 		return false;
 	}
 
@@ -222,14 +339,13 @@ static bool chnode_dir() {
 	if (mkdir_error && errno != EEXIST) {
 		perror("Failed to make chnode directory");
 		ctx.is_error = true;
-		ctx.is_recoverable = false;
 		return false;
 	}
 
 	return true;
 }
 
-static bool version_dir() {
+static bool version_dir(void) {
 	#ifdef TRACE
 	printf("TRACE: enter version_dir\n");
 	#endif
@@ -245,7 +361,6 @@ static bool version_dir() {
 	if (format_error) {
 		perror("Failed to construct path to directory for given version");
 		ctx.is_error = true;
-		ctx.is_recoverable = false;
 		return false;
 	}
 
@@ -259,7 +374,6 @@ static bool version_dir() {
 		if (mkdir_error && errno != EEXIST) {
 			perror("Failed to ensure version directory exists");
 			ctx.is_error = true;
-			ctx.is_recoverable = false;
 			return false;
 		}
 		ctx.installing = true;
@@ -269,14 +383,13 @@ static bool version_dir() {
 	if (nodejs_path_error) {
 		perror("Failed to ensure version directory exists");
 		ctx.is_error = true;
-		ctx.is_recoverable = false;
 		return false;
 	}
 	ctx.restoring = true;
 	return true;
 }
 
-static bool release_dir() {
+static bool release_dir(void) {
 	#ifdef TRACE
 	printf("TRACE: enter release_dir\n");
 	#endif
@@ -288,7 +401,6 @@ static bool release_dir() {
 	if (format_error) {
 		perror("Failed to construct path to directory for given version");
 		ctx.is_error = true;
-		ctx.is_recoverable = false;
 		return false;
 	}
 
@@ -300,7 +412,6 @@ static bool release_dir() {
 		if (mkdir_error && errno != EEXIST) {
 			perror("Failed to ensure release directory exists");
 			ctx.is_error = true;
-			ctx.is_recoverable = false;
 			return false;
 		}
 		return true;
@@ -309,13 +420,12 @@ static bool release_dir() {
 	if (nodejs_release_path_error) {
 		perror("Failed to ensure release directory exists");
 		ctx.is_error = true;
-		ctx.is_recoverable = false;
 		return false;
 	}
 	return true;
 }
 
-static bool download_and_verify() {
+static bool download_and_verify(void) {
 	#ifdef TRACE
 	printf("TRACE: enter download_and_verify\n");
 	#endif
@@ -337,7 +447,6 @@ static bool download_and_verify() {
 	if (format_error) {
 		perror("Failed to construct tarball file path");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -354,7 +463,6 @@ static bool download_and_verify() {
 	if (format_error) {
 		perror("Failed to construct URI for given version");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -369,7 +477,6 @@ static bool download_and_verify() {
 	if (format_error) {
 		perror("Failed to construct path for file download");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -377,7 +484,6 @@ static bool download_and_verify() {
 	if (!nodejs_tarball) {
 		perror("Failed to open file path for download");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -385,30 +491,40 @@ static bool download_and_verify() {
 	if (fclose(nodejs_tarball)) {
 		perror("Failed to close reference to tarball");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 	if (!downloaded) {
 		printf("Failed to download given version\n");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
-	format_error = asprintf(
-		&ctx.paths.shasums_uri,
-		"%s/v%s.%s.%s/SHASUMS256.txt",
-		NODEJS_DIST_BASE_URI,
+	#ifdef TRACE
+	printf(
+		"TRACE: major %s minor %s patch %s\n",
 		ctx.version.major,
 		ctx.version.minor,
 		ctx.version.patch
+	);
+	#endif
+
+	format_error = asprintf(
+		&ctx.paths.shasums_uri,
+		"%s/v%s.%s.%s/%s",
+		NODEJS_DIST_BASE_URI,
+		ctx.version.major,
+		ctx.version.minor,
+		ctx.version.patch,
+		"SHASUMS256.txt"
 	) < 0;
 	if (format_error) {
 		perror("Failed to construct URI to SHASUMS file");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
+	#ifdef TRACE
+	printf("TRACE: shasums_uri %s\n", ctx.paths.shasums_uri);
+	#endif
 
 	format_error = asprintf(
 		&ctx.paths.shasums,
@@ -418,7 +534,6 @@ static bool download_and_verify() {
 	if (format_error) {
 		perror("Failed to construct path for file download");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -426,7 +541,6 @@ static bool download_and_verify() {
 	if (!nodejs_shasums) {
 		perror("Failed to open file path for download");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -434,13 +548,11 @@ static bool download_and_verify() {
 	if (fclose(nodejs_shasums)) {
 		perror("Failed to close reference to SHASUMS file");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 	if (!downloaded) {
 		printf("Failed to download given SHASUMS file\n");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -457,14 +569,13 @@ static bool download_and_verify() {
 	if (cmd_status != 0) {
 		printf("Failed to verify release signatures for given version. Exiting...\n");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
 	return true;
 }
 
-static bool extract_tarball() {
+static bool extract_tarball(void) {
 	#ifdef TRACE
 	printf("TRACE: enter extract_tarball\n");
 	#endif
@@ -484,7 +595,6 @@ static bool extract_tarball() {
 	if (format_error) {
 		perror("Failed to construct command for extracting tarball");
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -492,7 +602,6 @@ static bool extract_tarball() {
 	if (cmd_status == 127 || cmd_status == -1 || cmd_status != 0) {
 		printf("Failed to extract tarball due to error %d. Exiting...\n", cmd_status);
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -500,7 +609,7 @@ static bool extract_tarball() {
 	return true;
 }
 
-static bool unlink_symlinks() {
+static bool unlink_symlinks(void) {
 	#ifdef TRACE
 	printf("TRACE: enter unlink_symlinks\n");
 	#endif
@@ -516,13 +625,11 @@ static bool unlink_symlinks() {
 		format_error = asprintf(&cmds[i], "%s/bin/%s", PREFIX, binaries[i]) < 0;
 		if (format_error) {
 			ctx.is_error = true;
-			ctx.is_recoverable = true;
 			return false;
 		}
 		if (unlink(cmds[i]) == -1 && errno != ENOENT) {
 			perror(cmds[i]);
 			ctx.is_error = true;
-			ctx.is_recoverable = true;
 			return false;
 		}
 	}
@@ -530,52 +637,49 @@ static bool unlink_symlinks() {
 	return true;
 }
 
-static bool mk_symlinks() {
+static bool mk_symlinks(void) {
 	#ifdef TRACE
 	printf("TRACE: enter mk_symlinks\n");
 	#endif
+
+	// FIXME
+	// parameterise this process so the compiler can unroll it (hopefully)
 
 	bool format_error, symlink_error;
 
 	format_error = asprintf(&ctx.paths.node_src, "%s/bin/node", ctx.paths.release) < 0;
 	if (format_error) {
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.node_dst, "%s/bin/node", PREFIX) < 0;
 	if (format_error) {
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.npm_src, "%s/bin/npm", ctx.paths.release) < 0;
 	if (format_error) {
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.npm_dst, "%s/bin/npm", PREFIX) < 0;
 	if (format_error) {
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.npx_src, "%s/bin/npx", ctx.paths.release) < 0;
 	if (format_error) {
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.npx_dst, "%s/bin/npx", PREFIX) < 0;
 	if (format_error) {
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -583,7 +687,6 @@ static bool mk_symlinks() {
 	if (symlink_error) {
 		perror(ctx.paths.node_dst);
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -591,7 +694,6 @@ static bool mk_symlinks() {
 	if (symlink_error) {
 		perror(ctx.paths.npm_dst);
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -599,14 +701,13 @@ static bool mk_symlinks() {
 	if (symlink_error) {
 		perror(ctx.paths.npx_dst);
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
 	return true;
 }
 
-static bool test_binaries() {
+static bool test_binaries(void) {
 	#ifdef TRACE
 	printf("TRACE: enter test_binaries\n");
 	#endif
@@ -617,14 +718,12 @@ static bool test_binaries() {
 	format_error = asprintf(&test_node, "%s -v", ctx.paths.node_dst) < 0;
 	if (format_error) {
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
 	format_error = asprintf(&test_npm, "%s -v", ctx.paths.npm_dst) < 0;
 	if (format_error) {
 		ctx.is_error = true;
-		ctx.is_recoverable = true;
 		return false;
 	}
 
@@ -639,55 +738,66 @@ static bool parse_arguments(int argc, char** argv) {
 	printf("TRACE: enter parse_arguments\n");
 	#endif
 
-	// TODO
-	// accept a command via stdin
-	if (
-		argc < 2 ||
-		!strncmp(argv[1], "-h", 2) ||
-		!strncmp(argv[1], "help", 4)
-	) {
-		ctx.args.help = true;
-		return true;
-	}
-
 	if (atexit(trap_exit)) {
 		perror("Failed to register exit handler. Exiting...\n");
 		return false;
 	}
 
-	if (!strncmp(argv[1], "use", 3)) {
-		ctx.args.use = true;
-		return true;
+	if (argc > 1) {
+
+		// is the first arg a call for help?
+		if (
+			!strncmp(argv[1], "-h", 2) ||
+			!strncmp(argv[1], "help", 4)
+		) {
+			ctx.args.help = true;
+			return true;
+		}
+
+		// or a call to use?
+		if (!strncmp(argv[1], "use", 3)) {
+			ctx.args.use = true;
+			return parse_nvmrc();
+		}
+
+		// or a version?
+		ctx.args.version = parse_version(argv[1]);
+		return ctx.args.version;
 	}
 
-	ctx.args.version = parse_version(argv[1]);
-	return ctx.args.version;
+	// otherwise, try and read a version from stdin
+	ctx.args.version = true;
+	return parse_stdin();
 }
 
-int dispatch_command(int argc, char** argv) {
+int chnode(int argc, char** argv) {
 	#ifdef TRACE
 	printf("TRACE: enter dispatch_command\n");
 	#endif
 
-	if (!parse_arguments(argc, argv)) return EXIT_FAILURE;
-	if (!chnode_dir()) return EXIT_FAILURE;
 
-	// TODO
-	// dispatch with one variable and function pointers?
+
+	if (!parse_arguments(argc, argv)) {
+		#ifdef TRACE
+		printf("TRACE: enter enter parse_arguments fail branch\n");
+		#endif
+		return EXIT_FAILURE;
+	}
+
 	if (ctx.args.help) {
+		#ifdef TRACE
+		printf("TRACE: enter help branch\n");
+		#endif
 		show_intro();
 		show_usage();
 		show_current();
 		return EXIT_SUCCESS;
 	}
 
-	if (ctx.args.use) {
-		// TODO
-		// from stdin/argv
-		return EXIT_SUCCESS;
-	}
-
 	if (ctx.args.version) {
+		#ifdef TRACE
+		printf("TRACE: enter version branch\n");
+		#endif
 		printf(
 			"Using v%s.%s.%s...\n",
 			ctx.version.major,
@@ -696,6 +806,7 @@ int dispatch_command(int argc, char** argv) {
 		);
 
 		if (
+			chnode_dir() &&
 			version_dir() &&
 			release_dir() &&
 			download_and_verify() &&
@@ -705,6 +816,10 @@ int dispatch_command(int argc, char** argv) {
 			test_binaries()
 		) return EXIT_SUCCESS;
 	}
+
+	#ifdef TRACE
+	printf("TRACE: enter failure branch\n");
+	#endif
 
 	return EXIT_FAILURE;
 }
