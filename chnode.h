@@ -31,10 +31,10 @@
 #include <curl/curl.h>
 
 static struct chnode {
-	bool is_error;
-	bool installing;
-	bool restoring;
-	char* allocation;
+	bool has_error;
+	bool is_installing;
+	bool is_restoring;
+	char* input_from_file;
 
 	struct args {
 		bool help;
@@ -78,14 +78,14 @@ static void trap_exit() {
 	printf("TRACE: enter on_exit\n");
 	#endif
 
-	if (ctx.allocation) {
+	if (ctx.input_from_file) {
 		#ifdef TRACE
-		printf("TRACE: enter ctx.allocation branch\n");
+		printf("TRACE: enter ctx.input_from_file branch\n");
 		#endif
-		free(ctx.allocation);
+		free(ctx.input_from_file);
 	}
 
-	if (!ctx.is_error) {
+	if (!ctx.has_error) {
 		#ifdef TRACE
 		printf("TRACE: enter not ctx.is_error branch\n");
 		#endif
@@ -97,7 +97,7 @@ static void trap_exit() {
 	char* clean_cmd;
 	bool format_error = asprintf(&clean_cmd, "rm -rf %s", ctx.paths.version) < 0;
 	if (format_error) {
-		printf("WARNING: Failed to format cleanup command\n");
+		perror("Failed to format cleanup command");
 		return;
 	}
 
@@ -188,15 +188,11 @@ static bool show_current(void) {
 		) < 0;
 		if (format_error) {
 			perror("Failed to format command");
-			ctx.is_error = true;
 			return false;
 		}
 
 		cmd_status = system(cmds[i]);
-		if (cmd_status > 0) {
-			ctx.is_error = true;
-			return false;
-		}
+		if (cmd_status > 0) return false;
 	}
 
 	return true;
@@ -266,21 +262,21 @@ static bool read_fd(int fd) {
 		return false;
 	}
 
-	ctx.allocation = malloc(fd_stat.st_size + 1);
-	if (!ctx.allocation) {
+	ctx.input_from_file = malloc(fd_stat.st_size + 1);
+	if (!ctx.input_from_file) {
 		perror("Failed to allocate memory for input bytes");
 		return false;
 	}
 
-	fread(ctx.allocation, 1, fd_stat.st_size, input);
-	ctx.allocation[fd_stat.st_size] = 0;
+	fread(ctx.input_from_file, 1, fd_stat.st_size, input);
+	ctx.input_from_file[fd_stat.st_size] = 0;
 
 	if (fclose(input) == EOF) {
 		perror("Failed to close file descriptor");
 		return false;
 	}
 
-	return parse_version(ctx.allocation);
+	return parse_version(ctx.input_from_file);
 }
 
 static bool parse_nvmrc(void) {
@@ -297,7 +293,7 @@ static bool parse_nvmrc(void) {
 	char* nvmrc_path;
 	bool format_error = asprintf(&nvmrc_path, "%s/.nvmrc", cwd) < 0;
 	if (format_error) {
-		printf("Failed to construct path to .nvmrc\n");
+		perror("Failed to construct path to .nvmrc");
 		return false;
 	}
 
@@ -331,14 +327,12 @@ static bool chnode_dir(void) {
 	) < 0;
 	if (format_error) {
 		perror("Failed to construct path to chnode directory");
-		ctx.is_error = true;
 		return false;
 	}
 
 	bool mkdir_error = mkdir(ctx.paths.chnode, 0770) < 0;
 	if (mkdir_error && errno != EEXIST) {
 		perror("Failed to make chnode directory");
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -360,7 +354,6 @@ static bool version_dir(void) {
 
 	if (format_error) {
 		perror("Failed to construct path to directory for given version");
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -373,19 +366,17 @@ static bool version_dir(void) {
 		// in a race, this directory could already exist
 		if (mkdir_error && errno != EEXIST) {
 			perror("Failed to ensure version directory exists");
-			ctx.is_error = true;
 			return false;
 		}
-		ctx.installing = true;
+		ctx.is_installing = true;
 		return true;
 	}
 
 	if (nodejs_path_error) {
 		perror("Failed to ensure version directory exists");
-		ctx.is_error = true;
 		return false;
 	}
-	ctx.restoring = true;
+	ctx.is_restoring = true;
 	return true;
 }
 
@@ -400,7 +391,6 @@ static bool release_dir(void) {
 	) < 0;
 	if (format_error) {
 		perror("Failed to construct path to directory for given version");
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -411,7 +401,6 @@ static bool release_dir(void) {
 		bool mkdir_error = mkdir(ctx.paths.release, 0770) < 0;
 		if (mkdir_error && errno != EEXIST) {
 			perror("Failed to ensure release directory exists");
-			ctx.is_error = true;
 			return false;
 		}
 		return true;
@@ -419,7 +408,6 @@ static bool release_dir(void) {
 
 	if (nodejs_release_path_error) {
 		perror("Failed to ensure release directory exists");
-		ctx.is_error = true;
 		return false;
 	}
 	return true;
@@ -429,7 +417,7 @@ static bool download_and_verify(void) {
 	#ifdef TRACE
 	printf("TRACE: enter download_and_verify\n");
 	#endif
-	if (ctx.restoring) return true;
+	if (ctx.is_restoring) return true;
 
 	bool format_error, downloaded;
 	int cmd_status;
@@ -446,7 +434,6 @@ static bool download_and_verify(void) {
 
 	if (format_error) {
 		perror("Failed to construct tarball file path");
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -462,7 +449,6 @@ static bool download_and_verify(void) {
 
 	if (format_error) {
 		perror("Failed to construct URI for given version");
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -476,26 +462,22 @@ static bool download_and_verify(void) {
 
 	if (format_error) {
 		perror("Failed to construct path for file download");
-		ctx.is_error = true;
 		return false;
 	}
 
 	nodejs_tarball = fopen(nodejs_download_path, "wb");
 	if (!nodejs_tarball) {
 		perror("Failed to open file path for download");
-		ctx.is_error = true;
 		return false;
 	}
 
 	downloaded = http_get_to_file(ctx.paths.tarball_uri, nodejs_tarball);
 	if (fclose(nodejs_tarball)) {
 		perror("Failed to close reference to tarball");
-		ctx.is_error = true;
 		return false;
 	}
 	if (!downloaded) {
 		printf("Failed to download given version\n");
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -519,7 +501,6 @@ static bool download_and_verify(void) {
 	) < 0;
 	if (format_error) {
 		perror("Failed to construct URI to SHASUMS file");
-		ctx.is_error = true;
 		return false;
 	}
 	#ifdef TRACE
@@ -533,26 +514,22 @@ static bool download_and_verify(void) {
 	) < 0;
 	if (format_error) {
 		perror("Failed to construct path for file download");
-		ctx.is_error = true;
 		return false;
 	}
 
 	nodejs_shasums = fopen(ctx.paths.shasums, "wb");
 	if (!nodejs_shasums) {
 		perror("Failed to open file path for download");
-		ctx.is_error = true;
 		return false;
 	}
 
 	downloaded = http_get_to_file(ctx.paths.shasums_uri, nodejs_shasums);
 	if (fclose(nodejs_shasums)) {
 		perror("Failed to close reference to SHASUMS file");
-		ctx.is_error = true;
 		return false;
 	}
 	if (!downloaded) {
 		printf("Failed to download given SHASUMS file\n");
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -564,11 +541,14 @@ static bool download_and_verify(void) {
 		ctx.paths.tarball,
 		ctx.paths.shasums
 	) < 0;
+	if (format_error) {
+		perror("Failed to format sha256sum command");
+		return false;
+	}
 
 	cmd_status = system(shasum_command);
 	if (cmd_status != 0) {
 		printf("Failed to verify release signatures for given version. Exiting...\n");
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -579,7 +559,7 @@ static bool extract_tarball(void) {
 	#ifdef TRACE
 	printf("TRACE: enter extract_tarball\n");
 	#endif
-	if (ctx.restoring) return true;
+	if (ctx.is_restoring) return true;
 
 	char* tar_command;
 	bool format_error;
@@ -594,14 +574,12 @@ static bool extract_tarball(void) {
 	) < 0;
 	if (format_error) {
 		perror("Failed to construct command for extracting tarball");
-		ctx.is_error = true;
 		return false;
 	}
 
 	cmd_status = system(tar_command);
 	if (cmd_status == 127 || cmd_status == -1 || cmd_status != 0) {
 		printf("Failed to extract tarball due to error %d. Exiting...\n", cmd_status);
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -624,12 +602,11 @@ static bool unlink_symlinks(void) {
 	for (size_t i = 0; i < 3; i += 1) {
 		format_error = asprintf(&cmds[i], "%s/bin/%s", PREFIX, binaries[i]) < 0;
 		if (format_error) {
-			ctx.is_error = true;
+			perror("Failed to format path to symlink");
 			return false;
 		}
 		if (unlink(cmds[i]) == -1 && errno != ENOENT) {
 			perror(cmds[i]);
-			ctx.is_error = true;
 			return false;
 		}
 	}
@@ -649,58 +626,55 @@ static bool mk_symlinks(void) {
 
 	format_error = asprintf(&ctx.paths.node_src, "%s/bin/node", ctx.paths.release) < 0;
 	if (format_error) {
-		ctx.is_error = true;
+		perror("Failed to format path to symlink");
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.node_dst, "%s/bin/node", PREFIX) < 0;
 	if (format_error) {
-		ctx.is_error = true;
+		perror("Failed to format path to symlink");
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.npm_src, "%s/bin/npm", ctx.paths.release) < 0;
 	if (format_error) {
-		ctx.is_error = true;
+		perror("Failed to format path to symlink");
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.npm_dst, "%s/bin/npm", PREFIX) < 0;
 	if (format_error) {
-		ctx.is_error = true;
+		perror("Failed to format path to symlink");
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.npx_src, "%s/bin/npx", ctx.paths.release) < 0;
 	if (format_error) {
-		ctx.is_error = true;
+		perror("Failed to format path to symlink");
 		return false;
 	}
 
 	format_error = asprintf(&ctx.paths.npx_dst, "%s/bin/npx", PREFIX) < 0;
 	if (format_error) {
-		ctx.is_error = true;
+		perror("Failed to format path to symlink");
 		return false;
 	}
 
 	symlink_error = symlink(ctx.paths.node_src, ctx.paths.node_dst) < 0;
 	if (symlink_error) {
 		perror(ctx.paths.node_dst);
-		ctx.is_error = true;
 		return false;
 	}
 
 	symlink_error = symlink(ctx.paths.npm_src, ctx.paths.npm_dst) < 0;
 	if (symlink_error) {
 		perror(ctx.paths.npm_dst);
-		ctx.is_error = true;
 		return false;
 	}
 
 	symlink_error = symlink(ctx.paths.npx_src, ctx.paths.npx_dst) < 0;
 	if (symlink_error) {
 		perror(ctx.paths.npx_dst);
-		ctx.is_error = true;
 		return false;
 	}
 
@@ -717,13 +691,13 @@ static bool test_binaries(void) {
 
 	format_error = asprintf(&test_node, "%s -v", ctx.paths.node_dst) < 0;
 	if (format_error) {
-		ctx.is_error = true;
+		perror("Failed to format binary test command");
 		return false;
 	}
 
 	format_error = asprintf(&test_npm, "%s -v", ctx.paths.npm_dst) < 0;
 	if (format_error) {
-		ctx.is_error = true;
+		perror("Failed to format binary test command");
 		return false;
 	}
 
@@ -775,8 +749,6 @@ int chnode(int argc, char** argv) {
 	printf("TRACE: enter dispatch_command\n");
 	#endif
 
-
-
 	if (!parse_arguments(argc, argv)) {
 		#ifdef TRACE
 		printf("TRACE: enter enter parse_arguments fail branch\n");
@@ -815,6 +787,8 @@ int chnode(int argc, char** argv) {
 			mk_symlinks() &&
 			test_binaries()
 		) return EXIT_SUCCESS;
+
+		ctx.has_error = true;
 	}
 
 	#ifdef TRACE
