@@ -134,15 +134,11 @@ static bool http_get_to_file(char* uri, FILE* f) {
 	);
 	#ifdef TRACE
 	if (!success) {
-		printf("TRACE: got curl error %d: %s\n", res, curl_easy_strerror(res));
+		printf("TRACE: http_get_to_file curl error %d: %s\n", res, curl_easy_strerror(res));
 	}
 	#endif
-
 	curl_easy_cleanup(curl);
 	curl_global_cleanup();
-	#ifdef TRACE
-	printf("TRACE: enter http_get_to_file\n");
-	#endif
 	return success;
 }
 
