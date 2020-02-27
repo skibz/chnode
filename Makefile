@@ -2,6 +2,7 @@
 chnode: *.c
 	cc \
 		-fsanitize=undefined,nullability,integer \
+		-std=c18 \
 		-Wall \
 		-D PREFIX="\"$(shell echo $$HOME)\"" \
 		-D TRACE \
@@ -16,6 +17,7 @@ install: *.c
 		-O3 \
 		-D_FORTIFY_SOURCE=2 \
 		-D PREFIX="\"$(PREFIX)\"" \
+		-std=c18 \
 		-Wall \
 		-pedantic \
 		$^ \

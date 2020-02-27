@@ -105,7 +105,14 @@ static void trap_exit() {
 	printf("TRACE: clean_cmd %s\n", clean_cmd);
 	#endif
 
-	if (system(clean_cmd)) {
+	int command_result = system(clean_cmd);
+
+	if (command_result == -1) {
+		perror("Failed to clean up version directory");
+		return;
+	}
+
+	if (command_result > 0) {
 		printf("WARNING: Failed to clean up directory %s\n", ctx.paths.version);
 		return;
 	}
@@ -615,63 +622,60 @@ static bool mk_symlinks(void) {
 	printf("TRACE: enter mk_symlinks\n");
 	#endif
 
-	// FIXME
-	// parameterise this process so the compiler can unroll it (hopefully)
-
 	bool format_error, symlink_error;
 
-	format_error = asprintf(&ctx.paths.node_src, "%s/bin/node", ctx.paths.release) < 0;
-	if (format_error) {
-		perror("Failed to format path to symlink");
-		return false;
+	char** link_src_ptrs[3] = {
+		&ctx.paths.node_src,
+		&ctx.paths.npm_src,
+		&ctx.paths.npx_src
+	};
+
+	char* link_srcs[3] = {
+		"%s/bin/node",
+		"%s/bin/npm",
+		"%s/bin/npx"
+	};
+
+	for (int i = 0; i < 3; i += 1) {
+		format_error = asprintf(link_src_ptrs[i], link_srcs[i], ctx.paths.release) < 0;
+		if (format_error) {
+			perror("Failed to format path to symlink");
+			return false;
+		}
 	}
 
-	format_error = asprintf(&ctx.paths.node_dst, "%s/bin/node", PREFIX) < 0;
-	if (format_error) {
-		perror("Failed to format path to symlink");
-		return false;
+	char** link_dst_ptrs[3] = {
+		&ctx.paths.node_dst,
+		&ctx.paths.npm_dst,
+		&ctx.paths.npx_dst
+	};
+
+	char* link_dsts[3] = {
+		"%s/bin/node",
+		"%s/bin/npm",
+		"%s/bin/npx"
+	};
+
+	for (int i = 0; i < 3; i += 1) {
+		format_error = asprintf(link_dst_ptrs[i], link_dsts[i], PREFIX) < 0;
+		if (format_error) {
+			perror("Failed to format path to symlink");
+			return false;
+		}
 	}
 
-	format_error = asprintf(&ctx.paths.npm_src, "%s/bin/npm", ctx.paths.release) < 0;
-	if (format_error) {
-		perror("Failed to format path to symlink");
-		return false;
-	}
+	char* links[3][2] = {
+		{ctx.paths.node_src, ctx.paths.node_dst},
+		{ctx.paths.npm_src, ctx.paths.npm_dst},
+		{ctx.paths.npx_src, ctx.paths.npx_dst}
+	};
 
-	format_error = asprintf(&ctx.paths.npm_dst, "%s/bin/npm", PREFIX) < 0;
-	if (format_error) {
-		perror("Failed to format path to symlink");
-		return false;
-	}
-
-	format_error = asprintf(&ctx.paths.npx_src, "%s/bin/npx", ctx.paths.release) < 0;
-	if (format_error) {
-		perror("Failed to format path to symlink");
-		return false;
-	}
-
-	format_error = asprintf(&ctx.paths.npx_dst, "%s/bin/npx", PREFIX) < 0;
-	if (format_error) {
-		perror("Failed to format path to symlink");
-		return false;
-	}
-
-	symlink_error = symlink(ctx.paths.node_src, ctx.paths.node_dst) < 0;
-	if (symlink_error) {
-		perror(ctx.paths.node_dst);
-		return false;
-	}
-
-	symlink_error = symlink(ctx.paths.npm_src, ctx.paths.npm_dst) < 0;
-	if (symlink_error) {
-		perror(ctx.paths.npm_dst);
-		return false;
-	}
-
-	symlink_error = symlink(ctx.paths.npx_src, ctx.paths.npx_dst) < 0;
-	if (symlink_error) {
-		perror(ctx.paths.npx_dst);
-		return false;
+	for (int i = 0; i < 3; i += 1) {
+		symlink_error = symlink(links[i][0], links[i][1]) < 0;
+		if (symlink_error) {
+			perror(links[i][0]);
+			return false;
+		}
 	}
 
 	return true;
@@ -707,6 +711,11 @@ static bool parse_arguments(int argc, char** argv) {
 	#ifdef TRACE
 	printf("TRACE: enter parse_arguments\n");
 	#endif
+
+	if (system(NULL) == 0) {
+		printf("Failed to detect an available shell. Exiting...\n");
+		return false;
+	}
 
 	if (atexit(trap_exit)) {
 		perror("Failed to register exit handler. Exiting...\n");
